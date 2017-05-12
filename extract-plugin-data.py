@@ -3,62 +3,64 @@
 import re
 from bs4 import BeautifulSoup
 import urllib2
-import csv
+import json
 from datetime import datetime
 from agithub.GitHub import GitHub
+from github_metadata import get_github_metadata
 
-
-def get_plugins():
+def get_categories():
     plugins_page = urllib2.urlopen('http://leafletjs.com/plugins.html').read()
     soup = BeautifulSoup(plugins_page, 'html.parser')
 
-    for tr in soup.find_all('tr'):
+    for h3 in soup.find_all('h3')[1:]:
+        category = h3.string
+        description = h3.find_next_sibling('p').string
+        plugin_table = h3.find_next_sibling('table')
+
+        yield {
+            'name': category,
+            'description': description,
+            'plugins': [
+                [p for p in get_plugins(plugin_table)]
+            ]
+        }
+
+def get_plugins(plugin_table):
+    for tr in plugin_table.find_all('tr'):
         tds = tr.find_all('td')
         if len(tds) == 3:
             plugin_link = tds[0].a
-            plugin = plugin_link.string
+            plugin_name = plugin_link.string
+            plugin_description = tds[1].string
             maintainer_link = tds[2].a
             plugin_url = plugin_link['href']
             maintainer_url = maintainer_link['href']
             maintainer = maintainer_link.string
 
-            yield {
-                'name': plugin,
-                'url': plugin_url,
-                'maintainer': maintainer,
-                'maintainer_url': maintainer_url
+            try:
+                metadata = get_plugin_metadata(plugin_url)
+            except Exception, e:
+                sys.stderr.write('%s (%s): %s\n' % (plugin_name, plugin_url, str(e)))
+                metadata = {}
+
+            plugin = {
+                'name': plugin_name,
+                'homepage': plugin_url,
+                'description': plugin_description,
+                'author': maintainer,
+                'author-url': maintainer_url,
             }
 
+            for (k, v) in metadata.items():
+                plugin[k] = v
 
-GITHUB_URL_PATTERNS = [
-    re.compile('^(https|http)://github.com/(?P<owner>[\\w\\-]+)/(?P<repo>[\\w\\.\\-]+)/{0,1}$'),
-    re.compile('^(https|http)://(?P<owner>[\\w\\-]+)\\.github\\.(com|io)/(?P<repo>[\\w\\-\\.]+)/{0,1}$'),
-]
-
-
-def get_repo_info(url):
-    for p in GITHUB_URL_PATTERNS:
-        url_match = p.match(url)
-        if url_match:
-            return {
-                'owner': url_match.group('owner'),
-                'repo': url_match.group('repo')
-            }
-
-    raise Exception('Not a GitHub repo')
+            yield plugin
 
 
-def get_plugin_metadata(url, github):
-    info = get_repo_info(url)
-    result = github.repos[info['owner']][info['repo']].get()
-    if result[0] == 200:
-        return result[1]
-    elif result[0] == 301:
-        repo = re.match('https://api.github.com/repositories/([0-9]+)', result[1]['url']).group(1)
-        return github.repositories[repo].get()[1]
-    else:
-        raise Exception('Unexpected result: %d', result[0])
-
+def get_plugin_metadata(url):
+    metadata = get_github_metadata(url, github)
+    metadata['plugin_era'] = era(datetime.strptime(metadata['pushed_at'], '%Y-%m-%dT%H:%M:%SZ'))
+    return dict([kv for kv in metadata if kv[0] in ['pushed_at']])
 
 def era(dt):
     LEAFLET_RELEASE_DATES = [
@@ -86,27 +88,5 @@ if __name__ == '__main__':
 
     api_token = sys.argv[1]
     github = GitHub(token=api_token)
-    writer = csv.writer(sys.stdout)
 
-    writer.writerow(['Name', 'Era', 'Last commit', 'URL', 'Maintainer', 'Maintainer URL'])
-
-    for plugin in get_plugins():
-        try:
-            metadata = get_plugin_metadata(plugin['url'], github)
-            name = metadata['name']
-            plugin_era = era(datetime.strptime(metadata['pushed_at'], '%Y-%m-%dT%H:%M:%SZ'))
-            pushed_at = metadata['pushed_at']
-        except Exception, e:
-            sys.stderr.write('%s (%s): %s\n' % (plugin['name'], plugin['url'], str(e)))
-            name = plugin['name']
-            plugin_era = ''
-            pushed_at = ''
-
-        writer.writerow([
-            name.encode('utf-8'),
-            plugin_era,
-            pushed_at,
-            plugin['url'],
-            plugin['maintainer'].encode('utf-8'),
-            plugin['maintainer_url']
-        ])
+    print json.dumps([c for c in get_categories()])
