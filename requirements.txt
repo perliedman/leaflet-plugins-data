@@ -5,4 +5,5 @@ bs4==0.0.1
 packaging==16.8
 pkg-resources==0.0.0
 pyparsing==2.2.0
+PyYAML==3.12
 six==1.10.0
